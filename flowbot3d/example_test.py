@@ -48,23 +48,23 @@ def make_tables(results_dir, method_names, metric, method_display_names=None, hi
 # Create the dataset.
 print("loading dataset")
 dataset = Flowbot3DPyGDataset(
-    root=os.path.expanduser("/home/russell/datasets/partnet-mobility-v0/dataset/raw/"),
+    root=os.path.expanduser("/home/russell/Datasets/partnet-mobility-v0/dataset/raw/"),
     split="umpnet-test",
     randomize_camera=False,
 )
 
 print("Load a ply point cloud, print it, and render it")
-ply_point_cloud = o3d.data.PLYPointCloud()
-pcd = o3d.t.io.read_point_cloud("/home/russell/box_open_masked.ply")
+pcd = o3d.t.io.read_point_cloud("/home/russell/Datasets/lab_tests/pcd/open_straight_masked.pcd")
+
 pcd = pcd.random_down_sample(1/10.0)
 print(pcd.point.positions.shape)
 # o3d.visualization.draw([pcd])
 
-manual_mask = torch.ones(pcd.point.positions.shape[0])
+manual_mask = torch.zeros(pcd.point.positions.shape[0])
 
 i = 0
 for point in pcd.point.colors:
-    if point[0] == 255:
+    if point[0] == 255 and point[1] == 0 and point[2] == 0:
         manual_mask[i] = 1
     i += 1
 
@@ -75,13 +75,16 @@ ros_dataset = tgd.Data(
     mask=manual_mask
 )
 
+print("manual_mask")
+print(manual_mask)
+
 ros_data= cast(Flowbot3DTGData, ros_dataset)
 
 
 # Load the model.
 print("loading checkpoint")
 
-ckpt_path = "/home/russell/git/flowbot3d/checkpoints/no-wandb/no_mask/epoch=99-step=78600.ckpt"
+ckpt_path = "/home/russell/git/flowbot3d/checkpoints/no-wandb/mask/epoch=99-step=78600.ckpt"
 model = fmf.ArtFlowNet.load_from_checkpoint(ckpt_path).cuda()
 model.eval()
 
@@ -96,6 +99,14 @@ print("Flow GT")
 print(data.flow.shape)
 print("Mask")
 print(data.mask.shape)
+
+print("Position")
+print(data.pos.dtype)
+print("Flow GT")
+print(data.flow.dtype)
+print("Mask")
+print(data.mask.dtype)
+
 
 time1 = time.perf_counter()
 
@@ -114,9 +125,7 @@ input = batch.cpu()
 input.flow = pred_flow
 
 fig = fmf.ArtFlowNet.make_plots(pred_flow, input)["artflownet_plot"]
-print("visualize1")
+
 fig.update_layout(autosize=False, height=800, width=1200)
-print("visualize2")
+
 fig.show()
-# print(fig)
-# fig['artflownet_plot'].show
