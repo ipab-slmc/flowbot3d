@@ -110,7 +110,8 @@ class Flowbot3DDataset:
         # Compute the flow.
         flow = compute_normalized_flow(
             P_world=pos,
-            T_world_base=data["T_world_base"],
+            # T_world_base=data["T_world_base"],
+            T_world_base=data["T_world_cam"],
             current_jas=data["angles"],
             pc_seg=data["seg"],
             labelmap=data["labelmap"],

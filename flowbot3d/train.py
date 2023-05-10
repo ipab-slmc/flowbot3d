@@ -40,7 +40,7 @@ def create_model(
 def create_flowbot_datasets(
     root: Path,
     dataset: str,
-    n_proc=-1,
+    n_workers=-1,
     randomize_camera: bool = True,
 ) -> Tuple[tgd.Dataset, tgd.Dataset, tgd.Dataset]:
     if dataset == "umpnet":
@@ -58,7 +58,7 @@ def create_flowbot_datasets(
                 randomize_camera,
             ),
             n_repeat=100,
-            n_proc=n_proc,
+            n_workers=n_workers,
         )
 
         test_dset = CachedByKeyDataset(
@@ -75,7 +75,7 @@ def create_flowbot_datasets(
                 randomize_camera,
             ),
             n_repeat=1,
-            n_proc=n_proc,
+            n_workers=n_workers,
         )
 
         unseen_dset = CachedByKeyDataset(
@@ -92,7 +92,7 @@ def create_flowbot_datasets(
                 randomize_camera,
             ),
             n_repeat=1,
-            n_proc=n_proc,
+            n_workers=n_workers,
         )
     elif dataset == "single":
         dset = CachedByKeyDataset(
@@ -109,7 +109,7 @@ def create_flowbot_datasets(
                 randomize_camera,
             ),
             n_repeat=1,
-            n_proc=n_proc,
+            n_workers=n_workers,
         )
         train_dset = dset
         test_dset = dset
@@ -125,7 +125,7 @@ def create_screwnet_datasets(
     root: Path,
     dataset: str,
     normalize=False,
-    n_proc=-1,
+    n_workers=-1,
 ):
     def _dset(split, n_repeat):
         return CachedByKeyDataset(
@@ -139,7 +139,7 @@ def create_screwnet_datasets(
             root=root,
             processed_dirname=ScrewDataset.get_processed_dir(normalize),
             n_repeat=n_repeat,
-            n_proc=n_proc,
+            n_workers=n_workers,
             seed=12345,
         )
 
@@ -232,7 +232,7 @@ def train(
     mask_input_channel: bool = True,
     randomize_camera: bool = True,
     epochs: int = 100,
-    n_proc: int = 100,
+    n_workers: int = 6,
     log_every_n_steps: int = 5,
     check_val_every_n_epoch: int = 1,
     wandb: bool = False,
@@ -249,13 +249,13 @@ def train(
             pm_root,
             dataset,
             normalize,
-            n_proc,
+            n_workers,
         )
     else:
         train_dset, test_dset, unseen_dset = create_flowbot_datasets(
             pm_root,
             dataset,
-            n_proc,
+            n_workers,
             randomize_camera=randomize_camera,
         )
 
@@ -306,7 +306,6 @@ def train(
 
     # Create the trainer, which we'll train on only 1 gpu.
     trainer = pl.Trainer(
-        gpus=1,
         logger=logger,
         callbacks=cbs,
         log_every_n_steps=log_every_n_steps,

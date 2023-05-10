@@ -42,21 +42,18 @@ def make_tables(results_dir, method_names, metric, method_display_names=None, hi
     return dfs
         
 
-
-
-
 # Create the dataset.
 print("loading dataset")
 dataset = Flowbot3DPyGDataset(
     root=os.path.expanduser("/home/russell/Datasets/partnet-mobility-v0/dataset/raw/"),
     split="umpnet-test",
-    randomize_camera=False,
+    randomize_camera=True,
 )
 
 print("Load a ply point cloud, print it, and render it")
-pcd = o3d.t.io.read_point_cloud("/home/russell/Datasets/lab_tests/pcd/open_straight_masked.pcd")
+pcd = o3d.t.io.read_point_cloud("/home/russell/Datasets/lab_tests/pcd/camera_frame/open_masked_no_table.pcd")
 
-pcd = pcd.random_down_sample(1/10.0)
+pcd = pcd.random_down_sample(1/20.0)
 print(pcd.point.positions.shape)
 # o3d.visualization.draw([pcd])
 
@@ -75,38 +72,19 @@ ros_dataset = tgd.Data(
     mask=manual_mask
 )
 
-print("manual_mask")
-print(manual_mask)
 
 ros_data= cast(Flowbot3DTGData, ros_dataset)
 
 
 # Load the model.
 print("loading checkpoint")
-
-ckpt_path = "/home/russell/git/flowbot3d/checkpoints/no-wandb/mask/epoch=99-step=78600.ckpt"
+ckpt_path = "/home/russell/git/flowbot3d/checkpoints/no-wandb/camera_frame/mask/epoch=99-step=78600.ckpt"
 model = fmf.ArtFlowNet.load_from_checkpoint(ckpt_path).cuda()
 model.eval()
 
 # Run inference on a single example.
-print("forward pass")
-data = ros_data
-# data = dataset.get_data("100243")
-
-print("Position")
-print(data.pos.shape)
-print("Flow GT")
-print(data.flow.shape)
-print("Mask")
-print(data.mask.shape)
-
-print("Position")
-print(data.pos.dtype)
-print("Flow GT")
-print(data.flow.dtype)
-print("Mask")
-print(data.mask.dtype)
-
+# data = ros_data
+data = dataset.get_data("48492")
 
 time1 = time.perf_counter()
 
@@ -117,10 +95,6 @@ with torch.no_grad():
 
 print(f"Took {time.perf_counter() - time1} seconds")
 # Display the figure.
-print("Output")
-print(pred_flow.shape)
-print(pred_flow)
-
 input = batch.cpu()
 input.flow = pred_flow
 
