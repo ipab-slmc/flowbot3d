@@ -22,7 +22,7 @@ dependencies = [
   "pyransac3d",
   "pytorch-lightning >= 1.6.4",
   "pytransform3d",
-  "rpad-partnet-mobility-utils[pybullet] @ git+https://github.com/r-pad/partnet_mobility_utils",
+  "rpad-partnet-mobility-utils[pybullet] @ git+https://github.com/ipab-slmc/partnet_mobility_dataset",
   "rpad-pyg @ git+https://github.com/r-pad/pyg_libs",
   "rpad-visualize-3d @ git+https://github.com/r-pad/visualize_3d",
   "sapien == 1.1.0; sys_platform == 'linux'",

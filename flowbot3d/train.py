@@ -57,7 +57,7 @@ def create_flowbot_datasets(
                 True,
                 randomize_camera,
             ),
-            n_repeat=100,
+            n_repeat=200,
             n_workers=n_workers,
         )
 

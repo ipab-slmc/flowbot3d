@@ -51,7 +51,7 @@ dataset = Flowbot3DPyGDataset(
 )
 
 print("Load a ply point cloud, print it, and render it")
-pcd = o3d.t.io.read_point_cloud("/home/russell/Datasets/lab_tests/pcd/camera_frame/open_masked_no_table.pcd")
+pcd = o3d.t.io.read_point_cloud("/home/russell/Datasets/lab_tests/pcd/camera_frame/ajar_masked.pcd")
 
 pcd = pcd.random_down_sample(1/20.0)
 print(pcd.point.positions.shape)
@@ -78,13 +78,13 @@ ros_data= cast(Flowbot3DTGData, ros_dataset)
 
 # Load the model.
 print("loading checkpoint")
-ckpt_path = "/home/russell/git/flowbot3d/checkpoints/no-wandb/camera_frame/mask/epoch=99-step=78600.ckpt"
+ckpt_path = "/home/russell/git/flowbot3d/checkpoints/no-wandb/2023_05_10-11_29_09/epoch=99-step=78600.ckpt"
 model = fmf.ArtFlowNet.load_from_checkpoint(ckpt_path).cuda()
 model.eval()
 
 # Run inference on a single example.
-# data = ros_data
-data = dataset.get_data("48492")
+data = ros_data
+# data = dataset.get_data("48492")
 
 time1 = time.perf_counter()
 
