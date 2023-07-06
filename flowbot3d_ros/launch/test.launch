@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+
+  <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find iiwa_grasping)/urdf/yang_grasping.urdf.xacro'"/>
+
+
+    <arg name="model_path" default="/home/russell/git/flowbot3d/checkpoints/no-wandb/2023_05_10-11_29_09/epoch=99-step=78600.ckpt"/>
+
+    <node pkg="flowbot3d_ros" name="flowbot3d_ros" type="flowbot3d_ros.py" args="--model_path $(arg model_path)" output="screen"/>
+    <node type="rviz" name="rviz" pkg="rviz" args="-d $(find flowbot3d_ros)/config/test.rviz"  output="screen"/>
+</launch>
