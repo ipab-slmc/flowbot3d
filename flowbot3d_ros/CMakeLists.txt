@@ -5,6 +5,7 @@ set(CATKIN_PACKAGE_DEPENDENCIES
     geometry_msgs
     sensor_msgs
     rospy
+    open3d_conversions
 )
 ## Find catkin macros and libraries
 find_package(catkin REQUIRED COMPONENTS 

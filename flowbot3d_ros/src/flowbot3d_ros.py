@@ -20,7 +20,6 @@ from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker
 import sensor_msgs.point_cloud2 as pc2
 from cv_bridge import CvBridge
-import ros_numpy
 
 # flowbot
 from flowbot3d.datasets.flow_dataset_pyg import Flowbot3DPyGDataset, Flowbot3DTGData
@@ -91,6 +90,30 @@ def convertCloudFromRosToOpen3d(ros_cloud):
     # return
     return open3d_cloud
 
+# Convert the datatype of point cloud from Open3D to ROS PointCloud2 (XYZRGB only)
+def convertCloudFromOpen3dToRos(open3d_cloud, frame_id="odom"):
+    # Set "header"
+    header = Header()
+    header.stamp = rospy.Time.now()
+    header.frame_id = frame_id
+
+    # Set "fields" and "cloud_data"
+    points=np.asarray(open3d_cloud.points)
+    if not open3d_cloud.colors: # XYZ only
+        fields=FIELDS_XYZ
+        cloud_data=points
+    else: # XYZ + RGB
+        fields=FIELDS_XYZRGB
+        # -- Change rgb color from "three float" to "one 24-byte int"
+        # 0x00FFFFFF is white, 0x00000000 is black.
+        colors = np.floor(np.asarray(open3d_cloud.colors)*255) # nx3 matrix
+        colors = colors[:,0] * BIT_MOVE_16 +colors[:,1] * BIT_MOVE_8 + colors[:,2]
+        colors = colors.astype(np.uint8)
+        points_list = points.tolist()
+        colors_list = colors.reshape(-1,1).tolist()
+        cloud_data = list(map(list.__add__, points_list, colors_list))
+        
+    return pc2.create_cloud(header, fields, cloud_data)
 
 def convertTensorToPointsArray(tensor):
     points = []
@@ -116,23 +139,36 @@ class RosFlowbot3d:
         self.bridge = CvBridge()
 
         self.camera_intrinsics = open3d.camera.PinholeCameraIntrinsic(
-            width=848, height=480, fx=419.8213195800781, fy=419.8213195800781, cx=429.4363098144531, cy=238.52459716796875)
+            width=640, height=480, fx=613.7716064453125, fy=614.099609375, cx=314.3857421875, cy=242.46636962890625)
 
+        self.camera_k_matrix = open3d.core.Tensor(self.camera_intrinsics.intrinsic_matrix)
         # Publishers
         self.pointcloud_pub = rospy.Publisher('masked_pointcloud', PointCloud2, queue_size=10)
         self.flow_pub = rospy.Publisher('affordance', Marker, queue_size=10)
         # Subscribers
-        rospy.Subscriber("/live_camera/depth/image_rect_raw/compressed",
-                         CompressedImage, self.depthImageCallback, queue_size=10)
-        rospy.Subscriber("/sam_node/masked_image", Image, self.maskedImageCallback, queue_size=10)
+        rospy.Subscriber("/live_camera/aligned_depth_to_color/image_raw",
+                         Image, self.depthImageCallback, queue_size=10)
+        rospy.Subscriber("/sam_node/mask", Image, self.maskedImageCallback, queue_size=10)
 
-    def maskedImageCallback(self, image_msg):
+    def maskedImageCallback(self, image_mask_msg):
         print("got masked image")
+        # convert image mask to open3d
+        image_mask_opencv = self.bridge.imgmsg_to_cv2(image_mask_msg, desired_encoding='32FC1')
+        # image_mask_opencv = np.array(image_mask_opencv,order="C") #not sure why this is needed
+        image_mask_open3d = open3d.t.geometry.Image(image_mask_opencv)
+
+        # convert depth image to open3d
         latest_depth_image_msg = self.depth_image_queue.pop()
-        depth_img_opencv = self.bridge.compressed_imgmsg_to_cv2(latest_depth_image_msg, desired_encoding='passthrough')
-        depth_img_open3d = open3d.geometry.Image(depth_img_opencv)
-        point_cloud = open3d.geometry.Pointcloud.create_from_depth_image(depth_img_open3d, self.camera_intrinsics)
-        self.pointcloud_pub.publish(self.pointcloud_pub)
+        depth_img_opencv = self.bridge.imgmsg_to_cv2(latest_depth_image_msg, desired_encoding='32FC1')
+        # depth_img_opencv = np.array(depth_img_opencv,order="C") #not sure why this is needed
+        depth_img_open3d = open3d.t.geometry.Image(depth_img_opencv)
+
+        # create rgbd
+        rgbd_image = open3d.t.geometry.RGBDImage(image_mask_open3d, depth_img_open3d)
+        point_cloud_open3d = open3d.t.geometry.PointCloud.create_from_rgbd_image(rgbd_image, self.camera_k_matrix)
+        point_cloud_msg = convertCloudFromOpen3dToRos(point_cloud_open3d.to_legacy(), frame_id=latest_depth_image_msg.header.frame_id)
+        self.pointcloud_pub.publish(point_cloud_msg)
+        
         # pointcloud_open3d = convertCloudFromRosToOpen3d(latest_depth_image_msg)
         # pointcloud_open3d = pointcloud_open3d.random_down_sample(1/50.0)
 

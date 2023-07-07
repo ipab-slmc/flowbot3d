@@ -16,6 +16,7 @@
   <depend>rospy</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>open3d_conversions</depend>
 
 
 </package>
