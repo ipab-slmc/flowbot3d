@@ -16,6 +16,7 @@ import rospy
 from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud, PointCloud2, PointField
 from sensor_msgs.msg import Image, CompressedImage
+from geometry_msgs.msg import WrenchStamped
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker
 import sensor_msgs.point_cloud2 as pc2
@@ -146,6 +147,7 @@ class RosFlowbot3d:
         # Publishers
         self.pointcloud_pub = rospy.Publisher('masked_pointcloud', PointCloud2, queue_size=10)
         self.flow_pub = rospy.Publisher('affordance', Marker, queue_size=10)
+        self.wrench_pub = rospy.Publisher('wrench', WrenchStamped, queue_size=10)
         # Subscribers
         rospy.Subscriber("/live_camera/aligned_depth_to_color/image_raw",
                          Image, self.depthImageCallback, queue_size=10)
@@ -217,8 +219,14 @@ class RosFlowbot3d:
         masked_input = input_tensor[mask_idx]
         masked_pred_flow = pred_flow[mask_idx]
 
-        # print(f"pred_flow {pred_flow}")
-        # print(f"masked_pred_flow {masked_pred_flow}")
+        wrench_msg = WrenchStamped()
+        wrench_msg.header.frame_id = point_cloud_msg.header.frame_id
+        wrench_msg.header.stamp = point_cloud_msg.header.stamp
+        force = torch.mean(masked_pred_flow,axis=0)
+        wrench_msg.wrench.force.x = force[0]
+        wrench_msg.wrench.force.y = force[1]
+        wrench_msg.wrench.force.z = force[2]
+        self.wrench_pub.publish(wrench_msg)
 
         flow_scale = 0.05
         initial_points = convertTensorToPointsArray(masked_input)
