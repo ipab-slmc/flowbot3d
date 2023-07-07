@@ -20,6 +20,7 @@ from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker
 import sensor_msgs.point_cloud2 as pc2
 from cv_bridge import CvBridge
+import cv2
 
 # flowbot
 from flowbot3d.datasets.flow_dataset_pyg import Flowbot3DPyGDataset, Flowbot3DTGData
@@ -98,15 +99,15 @@ def convertCloudFromOpen3dToRos(open3d_cloud, frame_id="odom"):
     header.frame_id = frame_id
 
     # Set "fields" and "cloud_data"
-    points=np.asarray(open3d_cloud.points)
-    if not open3d_cloud.colors: # XYZ only
+    points=open3d.core.Tensor.numpy(open3d_cloud.point.positions).astype(np.float32)
+    if len(open3d_cloud.point.colors) == 0: # XYZ only
         fields=FIELDS_XYZ
         cloud_data=points
     else: # XYZ + RGB
         fields=FIELDS_XYZRGB
         # -- Change rgb color from "three float" to "one 24-byte int"
         # 0x00FFFFFF is white, 0x00000000 is black.
-        colors = np.floor(np.asarray(open3d_cloud.colors)*255) # nx3 matrix
+        colors = np.floor(open3d.core.Tensor.numpy(open3d_cloud.point.colors)*255) # nx3 matrix
         colors = colors[:,0] * BIT_MOVE_16 +colors[:,1] * BIT_MOVE_8 + colors[:,2]
         colors = colors.astype(np.uint8)
         points_list = points.tolist()
@@ -154,73 +155,79 @@ class RosFlowbot3d:
         print("got masked image")
         # convert image mask to open3d
         image_mask_opencv = self.bridge.imgmsg_to_cv2(image_mask_msg, desired_encoding='32FC1')
-        # image_mask_opencv = np.array(image_mask_opencv,order="C") #not sure why this is needed
         image_mask_open3d = open3d.t.geometry.Image(image_mask_opencv)
 
         # convert depth image to open3d
         latest_depth_image_msg = self.depth_image_queue.pop()
         depth_img_opencv = self.bridge.imgmsg_to_cv2(latest_depth_image_msg, desired_encoding='32FC1')
-        # depth_img_opencv = np.array(depth_img_opencv,order="C") #not sure why this is needed
         depth_img_open3d = open3d.t.geometry.Image(depth_img_opencv)
 
         # create rgbd
         rgbd_image = open3d.t.geometry.RGBDImage(image_mask_open3d, depth_img_open3d)
-        point_cloud_open3d = open3d.t.geometry.PointCloud.create_from_rgbd_image(rgbd_image, self.camera_k_matrix)
-        point_cloud_msg = convertCloudFromOpen3dToRos(point_cloud_open3d.to_legacy(), frame_id=latest_depth_image_msg.header.frame_id)
+        pointcloud_open3d = open3d.t.geometry.PointCloud.create_from_rgbd_image(rgbd_image, self.camera_k_matrix)
+        pointcloud_open3d = pointcloud_open3d.random_down_sample(1/20.0) # downsample for flowbot
+
+        open3d.t.io.write_point_cloud("/home/russell/test.pcd", pointcloud_open3d)
+        cv2.imwrite("/home/russell/test_color.png",  image_mask_opencv)
+        cv2.imwrite("/home/russell/test_depth.png",  depth_img_opencv)
+
+        point_cloud_msg = convertCloudFromOpen3dToRos(pointcloud_open3d, frame_id=latest_depth_image_msg.header.frame_id)
         self.pointcloud_pub.publish(point_cloud_msg)
         
-        # pointcloud_open3d = convertCloudFromRosToOpen3d(latest_depth_image_msg)
-        # pointcloud_open3d = pointcloud_open3d.random_down_sample(1/50.0)
+        ############## Read back file
+        pcd = open3d.t.io.read_point_cloud("/home/russell/test.pcd")
+        input_tensor = torch.utils.dlpack.from_dlpack(pcd.point.positions.to_dlpack())
+        mask = torch.zeros(pcd.point.positions.shape[0])
 
-        # input_tensor = torch.tensor(np.array(pointcloud_open3d.points),dtype=torch.float32)
-        # manual_mask = torch.ones(input_tensor.shape[0],dtype=torch.float32)
+        i = 0
+        for point in pcd.point.colors:
+            if not( point[0] == 0 and point[1] == 0 and point[2] == 0):
+                mask[i] = 1
+            i += 1
 
-        # ros_dataset = tgd.Data(
-        #     id="box",
-        #     pos=input_tensor,
-        #     flow=torch.zeros_like(input_tensor,dtype=torch.float32),
-        #     mask=manual_mask
-        # )
-        # ros_data= typing.cast(Flowbot3DTGData, ros_dataset)
+        ros_dataset = tgd.Data(
+            id="box",
+            pos=input_tensor,
+            flow=torch.zeros_like(input_tensor,dtype=torch.float32),
+            mask=mask
+        )
+        ros_data= typing.cast(Flowbot3DTGData, ros_dataset)
+        batch = tgd.Batch.from_data_list([ros_data])
+        with torch.no_grad():
+            pred_flow = self.model(batch.cuda()).cpu()
 
-        # batch = tgd.Batch.from_data_list([ros_data])
-        # with torch.no_grad():
-        #     pred_flow = self.model(batch.cuda()).cpu()
 
-        # pred_flow_normalized = (pred_flow / pred_flow.norm(dim=1).max()).numpy()
 
-        # line_list = Marker()
-        # line_list.header.frame_id = pointcloud_msg.header.frame_id
-        # line_list.header.stamp = pointcloud_msg.header.stamp
-        # line_list.ns = "line_list"
-        # line_list.action = Marker.ADD
-        # line_list.pose.orientation.w = 1.0
+        line_list = Marker()
+        line_list.header.frame_id = point_cloud_msg.header.frame_id
+        line_list.header.stamp = point_cloud_msg.header.stamp
+        line_list.ns = "line_list"
+        line_list.action = Marker.ADD
+        line_list.pose.orientation.w = 1.0
 
-        # line_list.id = 2
-        # line_list.type = Marker.LINE_LIST
-        # line_list.scale.x = 0.1
+        line_list.id = 2
+        line_list.type = Marker.LINE_LIST
+        line_list.scale.x = 0.001
 
-        # line_list.color.r = 1.0
-        # line_list.color.a = 1.0
+        line_list.color.r = 1.0
+        line_list.color.a = 1.0
 
-        # print(input_tensor[0])
-        # print(pred_flow[0])
+        mask_idx = mask == 1
+ 
+        masked_input = input_tensor[mask_idx]
+        masked_pred_flow = pred_flow[mask_idx]
 
-        # initial_points = convertTensorToPointsArray(input_tensor)
-        # end_points = convertTensorToPointsArray(input_tensor + pred_flow)
-        # interleave_list = list(itertools.chain(*zip(initial_points,end_points)))
+        # print(f"pred_flow {pred_flow}")
+        # print(f"masked_pred_flow {masked_pred_flow}")
 
-        # print(initial_points[0])
+        flow_scale = 0.05
+        initial_points = convertTensorToPointsArray(masked_input)
+        end_points = convertTensorToPointsArray(masked_input + flow_scale*masked_pred_flow)
+        interleave_list = list(itertools.chain(*zip(initial_points,end_points)))
 
-        # print(end_points[0])
-        # print(interleave_list[0])
-        # print(interleave_list[1])
+        line_list.points = interleave_list
+        self.flow_pub.publish(line_list)
 
-        # line_list.points = interleave_list
-
-        # self.flow_pub.publish(line_list)
-
-        # exit(0)
 
     def depthImageCallback(self, depth_img):
 
@@ -235,7 +242,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Model training for single GPU')
     parser.add_argument(
         '--model_path',
-        default='/home/russell/git/flowbot3d/checkpoints/no-wandb/2023_05_10-11_29_09/epoch=99-step=78600.ckpt',
+        default='/home/russell/git/flowbot3d/checkpoints/no-wandb/camera_frame/mask/epoch=99-step=78600.ckpt',
         type=str)
 
     args, unknown = parser.parse_known_args()

@@ -191,7 +191,7 @@ class ArtFlowNet(pl.LightningModule):
 
         # normalize the flow for visualization.
         n_f_gt = (f_target / f_target.norm(dim=1).max()).numpy()
-        n_f_pred = (f_pred / f_target.norm(dim=1).max()).numpy()
+        n_f_pred = f_pred #(f_pred / f_target.norm(dim=1).max()).numpy()
 
         # GT flow.
         fig.add_trace(v3p.pointcloud(pos, 1, scene="scene2", name="pts"), row=2, col=1)
