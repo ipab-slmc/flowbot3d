@@ -17,10 +17,12 @@ from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud, PointCloud2, PointField
 from sensor_msgs.msg import Image, CompressedImage
 from geometry_msgs.msg import WrenchStamped
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, PointStamped
+from geometry_msgs.msg import TransformStamped
 from visualization_msgs.msg import Marker
 import sensor_msgs.point_cloud2 as pc2
 from cv_bridge import CvBridge
+import tf2_ros
 import cv2
 
 # flowbot
@@ -93,6 +95,8 @@ def convertCloudFromRosToOpen3d(ros_cloud):
     return open3d_cloud
 
 # Convert the datatype of point cloud from Open3D to ROS PointCloud2 (XYZRGB only)
+
+
 def convertCloudFromOpen3dToRos(open3d_cloud, frame_id="odom"):
     # Set "header"
     header = Header()
@@ -100,22 +104,23 @@ def convertCloudFromOpen3dToRos(open3d_cloud, frame_id="odom"):
     header.frame_id = frame_id
 
     # Set "fields" and "cloud_data"
-    points=open3d.core.Tensor.numpy(open3d_cloud.point.positions).astype(np.float32)
-    if len(open3d_cloud.point.colors) == 0: # XYZ only
-        fields=FIELDS_XYZ
-        cloud_data=points
-    else: # XYZ + RGB
-        fields=FIELDS_XYZRGB
+    points = open3d.core.Tensor.numpy(open3d_cloud.point["points"]).astype(np.float32)
+    if len(open3d_cloud.point["colors"]) == 0:  # XYZ only
+        fields = FIELDS_XYZ
+        cloud_data = points
+    else:  # XYZ + RGB
+        fields = FIELDS_XYZRGB
         # -- Change rgb color from "three float" to "one 24-byte int"
         # 0x00FFFFFF is white, 0x00000000 is black.
-        colors = np.floor(open3d.core.Tensor.numpy(open3d_cloud.point.colors)*255) # nx3 matrix
-        colors = colors[:,0] * BIT_MOVE_16 +colors[:,1] * BIT_MOVE_8 + colors[:,2]
-        colors = colors.astype(np.uint8)
+        colors = np.floor(open3d.core.Tensor.numpy(open3d_cloud.point["colors"]))  # nx3 matrix
+        colors = colors[:, 0] * BIT_MOVE_16 + colors[:, 1] * BIT_MOVE_8 + colors[:, 2]
+        colors = colors.astype(np.uint32)
         points_list = points.tolist()
-        colors_list = colors.reshape(-1,1).tolist()
+        colors_list = colors.reshape(-1, 1).tolist()
         cloud_data = list(map(list.__add__, points_list, colors_list))
-        
+
     return pc2.create_cloud(header, fields, cloud_data)
+
 
 def convertTensorToPointsArray(tensor):
     points = []
@@ -137,68 +142,87 @@ class RosFlowbot3d:
         self.model.eval()
 
         self.depth_image_queue = []
+        self.grasp_point = PointStamped()
         self.queue_size = 10
         self.bridge = CvBridge()
 
+        # real camera
+        # self.camera_intrinsics = open3d.camera.PinholeCameraIntrinsic(
+        #     width=640, height=480, fx=613.7716064453125, fy=614.099609375, cx=314.3857421875, cy=242.46636962890625)
+
+        # simulation
         self.camera_intrinsics = open3d.camera.PinholeCameraIntrinsic(
-            width=640, height=480, fx=613.7716064453125, fy=614.099609375, cx=314.3857421875, cy=242.46636962890625)
+            width=640, height=480, fx=462.1379699707031, fy=462.1379699707031, cx=320.0, cy=240.0)
 
         self.camera_k_matrix = open3d.core.Tensor(self.camera_intrinsics.intrinsic_matrix)
         # Publishers
+        self.grasp_point_pub = rospy.Publisher('grasp_point', PointStamped, queue_size=10)
         self.pointcloud_pub = rospy.Publisher('masked_pointcloud', PointCloud2, queue_size=10)
         self.flow_pub = rospy.Publisher('affordance', Marker, queue_size=10)
         self.wrench_pub = rospy.Publisher('wrench', WrenchStamped, queue_size=10)
         # Subscribers
-        rospy.Subscriber("/live_camera/aligned_depth_to_color/image_raw",
+        rospy.Subscriber("/rqt_image_segmentation/click_point",
+                         PointStamped, self.clickPointCallback, queue_size=10)
+        rospy.Subscriber("/input/depth_image",
                          Image, self.depthImageCallback, queue_size=10)
-        rospy.Subscriber("/sam_node/mask", Image, self.maskedImageCallback, queue_size=10)
+        rospy.Subscriber("/input/mask", Image, self.maskedImageCallback, queue_size=10)
+
+        self.tf_broadcaster = tf2_ros.StaticTransformBroadcaster()
+
+        self.tfBuffer = tf2_ros.Buffer()
+        self.listener = tf2_ros.TransformListener(self.tfBuffer)
+
+        self.rate = rospy.Rate(10) # 10hz
+        self.wrench_msg = WrenchStamped()
+        self.tf_msg = TransformStamped()
+        self.got_click = False
 
     def maskedImageCallback(self, image_mask_msg):
-        print("got masked image")
         # convert image mask to open3d
         image_mask_opencv = self.bridge.imgmsg_to_cv2(image_mask_msg, desired_encoding='32FC1')
-        image_mask_open3d = open3d.t.geometry.Image(image_mask_opencv)
+        zero_channel = np.zeros_like(image_mask_opencv)
+        image_mask_opencv_bgr = cv2.merge((image_mask_opencv, zero_channel, zero_channel))
+        image_mask_open3d = open3d.t.geometry.Image(open3d.core.Tensor(image_mask_opencv_bgr))
 
         # convert depth image to open3d
         latest_depth_image_msg = self.depth_image_queue.pop()
         depth_img_opencv = self.bridge.imgmsg_to_cv2(latest_depth_image_msg, desired_encoding='32FC1')
-        depth_img_open3d = open3d.t.geometry.Image(depth_img_opencv)
+        depth_img_open3d = open3d.t.geometry.Image(open3d.core.Tensor(depth_img_opencv))
 
         # create rgbd
         rgbd_image = open3d.t.geometry.RGBDImage(image_mask_open3d, depth_img_open3d)
-        pointcloud_open3d = open3d.t.geometry.PointCloud.create_from_rgbd_image(rgbd_image, self.camera_k_matrix)
-        pointcloud_open3d = pointcloud_open3d.random_down_sample(1/20.0) # downsample for flowbot
+        pointcloud_open3d = open3d.t.geometry.PointCloud.create_from_rgbd_image(
+            rgbd_image, self.camera_k_matrix, stride=10)
+        # pointcloud_open3d = pointcloud_open3d.voxel_down_sample(0.01) # downsample for flowbot
 
         open3d.t.io.write_point_cloud("/home/russell/test.pcd", pointcloud_open3d)
-        cv2.imwrite("/home/russell/test_color.png",  image_mask_opencv)
-        cv2.imwrite("/home/russell/test_depth.png",  depth_img_opencv)
+        cv2.imwrite("/home/russell/image_mask.png",  image_mask_opencv_bgr)
+        cv2.imwrite("/home/russell/depth_image.png",  depth_img_opencv)
 
-        point_cloud_msg = convertCloudFromOpen3dToRos(pointcloud_open3d, frame_id=latest_depth_image_msg.header.frame_id)
+        point_cloud_msg = convertCloudFromOpen3dToRos(
+            pointcloud_open3d, frame_id=latest_depth_image_msg.header.frame_id)
         self.pointcloud_pub.publish(point_cloud_msg)
-        
-        ############## Read back file
-        pcd = open3d.t.io.read_point_cloud("/home/russell/test.pcd")
-        input_tensor = torch.utils.dlpack.from_dlpack(pcd.point.positions.to_dlpack())
-        mask = torch.zeros(pcd.point.positions.shape[0])
+
+        input_tensor = torch.utils.dlpack.from_dlpack(pointcloud_open3d.point["points"].to_dlpack()).type(torch.float32)
+        masking_colors = torch.utils.dlpack.from_dlpack(pointcloud_open3d.point["colors"].to_dlpack()).type(torch.uint8)
+        mask = torch.zeros(input_tensor.shape[0])
 
         i = 0
-        for point in pcd.point.colors:
-            if not( point[0] == 0 and point[1] == 0 and point[2] == 0):
+        for p in range(masking_colors.shape[0]):
+            if (masking_colors[p][0] == 255 and masking_colors[p][1] == 0 and masking_colors[p][2] == 0):
                 mask[i] = 1
             i += 1
 
         ros_dataset = tgd.Data(
             id="box",
             pos=input_tensor,
-            flow=torch.zeros_like(input_tensor,dtype=torch.float32),
+            flow=torch.zeros_like(input_tensor, dtype=torch.float32),
             mask=mask
         )
-        ros_data= typing.cast(Flowbot3DTGData, ros_dataset)
+        ros_data = typing.cast(Flowbot3DTGData, ros_dataset)
         batch = tgd.Batch.from_data_list([ros_data])
         with torch.no_grad():
             pred_flow = self.model(batch.cuda()).cpu()
-
-
 
         line_list = Marker()
         line_list.header.frame_id = point_cloud_msg.header.frame_id
@@ -215,26 +239,68 @@ class RosFlowbot3d:
         line_list.color.a = 1.0
 
         mask_idx = mask == 1
- 
+
         masked_input = input_tensor[mask_idx]
         masked_pred_flow = pred_flow[mask_idx]
 
-        wrench_msg = WrenchStamped()
-        wrench_msg.header.frame_id = point_cloud_msg.header.frame_id
-        wrench_msg.header.stamp = point_cloud_msg.header.stamp
-        force = torch.mean(masked_pred_flow,axis=0)
-        wrench_msg.wrench.force.x = force[0]
-        wrench_msg.wrench.force.y = force[1]
-        wrench_msg.wrench.force.z = force[2]
-        self.wrench_pub.publish(wrench_msg)
+        
+        self.wrench_msg.header.frame_id = "grasp_point"
+        self.wrench_msg.header.stamp = point_cloud_msg.header.stamp
+        force = torch.mean(masked_pred_flow, axis=0)
+        self.wrench_msg.wrench.force.x = force[0]
+        self.wrench_msg.wrench.force.y = force[1]
+        self.wrench_msg.wrench.force.z = force[2]
+        
 
         flow_scale = 0.05
         initial_points = convertTensorToPointsArray(masked_input)
         end_points = convertTensorToPointsArray(masked_input + flow_scale*masked_pred_flow)
-        interleave_list = list(itertools.chain(*zip(initial_points,end_points)))
+        interleave_list = list(itertools.chain(*zip(initial_points, end_points)))
 
         line_list.points = interleave_list
         self.flow_pub.publish(line_list)
+
+        self.got_click = True
+
+    def clickPointCallback(self, click_point):
+        # Project point into 3D
+        latest_depth_image_msg = self.depth_image_queue.pop()
+        depth_img_opencv = self.bridge.imgmsg_to_cv2(latest_depth_image_msg, desired_encoding='32FC1')
+        point2d = torch.reshape(torch.Tensor([click_point.point.x, click_point.point.y, 1.0]), (3,1))
+        camera_matrix = torch.Tensor(self.camera_intrinsics.intrinsic_matrix)
+        point3d = torch.matmul(camera_matrix.inverse(), point2d)
+
+        self.grasp_point.header.stamp = click_point.header.stamp
+        self.grasp_point.header.frame_id = latest_depth_image_msg.header.frame_id
+        depth = depth_img_opencv[int(click_point.point.y)][int(click_point.point.x)] * 0.001 # conver mm to m
+        self.grasp_point.point.x = point3d[0][0] * depth
+        self.grasp_point.point.y = point3d[1][0] * depth
+        self.grasp_point.point.z = depth
+
+        self.grasp_point_pub.publish(self.grasp_point)
+
+        self.tf_msg.header.frame_id = latest_depth_image_msg.header.frame_id
+        
+
+    
+    def run(self):
+        
+        while not rospy.is_shutdown():
+            if self.got_click:
+                self.tf_msg.header.stamp = rospy.Time.now()
+                self.tf_msg.child_frame_id = "grasp_point"
+                self.tf_msg.transform.translation.x = self.grasp_point.point.x
+                self.tf_msg.transform.translation.y = self.grasp_point.point.y
+                self.tf_msg.transform.translation.z = self.grasp_point.point.z
+                self.tf_msg.transform.rotation.x = 0
+                self.tf_msg.transform.rotation.y = 0
+                self.tf_msg.transform.rotation.z = 0
+                self.tf_msg.transform.rotation.w = 1
+                self.tf_broadcaster.sendTransform(self.tf_msg)
+
+                self.wrench_msg.header.stamp = rospy.Time.now()
+                self.wrench_pub.publish(self.wrench_msg)
+            self.rate.sleep()
 
 
     def depthImageCallback(self, depth_img):
@@ -259,4 +325,5 @@ if __name__ == '__main__':
 
     rosFlowbot = RosFlowbot3d(args)
 
-    rospy.spin()
+    rosFlowbot.run()
+    # rospy.spin()
