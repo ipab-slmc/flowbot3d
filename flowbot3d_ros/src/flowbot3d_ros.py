@@ -9,7 +9,7 @@ from ctypes import *  # convert float to uint32
 import torch_geometric.data as tgd
 import itertools
 import typing
-
+from scipy.spatial.transform import Rotation
 
 # ROS imports
 import rospy
@@ -138,11 +138,10 @@ class RosFlowbot3d:
 
     def __init__(self, args):
 
-        self.model = fmf.ArtFlowNet.load_from_checkpoint(args.model_path).cuda()
-        self.model.eval()
+        # self.model = fmf.ArtFlowNet.load_from_checkpoint(args.model_path).cuda()
+        # self.model.eval()
 
         self.depth_image_queue = []
-        self.grasp_point = PointStamped()
         self.queue_size = 10
         self.bridge = CvBridge()
 
@@ -156,10 +155,10 @@ class RosFlowbot3d:
 
         self.camera_k_matrix = open3d.core.Tensor(self.camera_intrinsics.intrinsic_matrix)
         # Publishers
-        self.grasp_point_pub = rospy.Publisher('grasp_point', PointStamped, queue_size=10)
-        self.pointcloud_pub = rospy.Publisher('masked_pointcloud', PointCloud2, queue_size=10)
-        self.flow_pub = rospy.Publisher('affordance', Marker, queue_size=10)
-        self.wrench_pub = rospy.Publisher('wrench', WrenchStamped, queue_size=10)
+        self.grasp_goal_pub = rospy.Publisher('~grasp_goal', PointStamped, queue_size=10)
+        self.pointcloud_pub = rospy.Publisher('~masked_pointcloud', PointCloud2, queue_size=10)
+        self.flow_pub = rospy.Publisher('~affordance', Marker, queue_size=10)
+        self.wrench_pub = rospy.Publisher('~wrench', WrenchStamped, queue_size=10)
         # Subscribers
         rospy.Subscriber("/rqt_image_segmentation/click_point",
                          PointStamped, self.clickPointCallback, queue_size=10)
@@ -172,10 +171,12 @@ class RosFlowbot3d:
         self.tfBuffer = tf2_ros.Buffer()
         self.listener = tf2_ros.TransformListener(self.tfBuffer)
 
-        self.rate = rospy.Rate(10) # 10hz
+        self.rate = rospy.Rate(10)  # 10hz
+        self.grasp_goal_msg = PointStamped()
         self.wrench_msg = WrenchStamped()
         self.tf_msg = TransformStamped()
         self.got_click = False
+        self.got_mask = False
 
     def maskedImageCallback(self, image_mask_msg):
         # convert image mask to open3d
@@ -221,8 +222,9 @@ class RosFlowbot3d:
         )
         ros_data = typing.cast(Flowbot3DTGData, ros_dataset)
         batch = tgd.Batch.from_data_list([ros_data])
-        with torch.no_grad():
-            pred_flow = self.model(batch.cuda()).cpu()
+        pred_flow = torch.zeros_like(input_tensor)
+        # with torch.no_grad():
+        # pred_flow = self.model(batch.cuda()).cpu()
 
         line_list = Marker()
         line_list.header.frame_id = point_cloud_msg.header.frame_id
@@ -243,14 +245,12 @@ class RosFlowbot3d:
         masked_input = input_tensor[mask_idx]
         masked_pred_flow = pred_flow[mask_idx]
 
-        
-        self.wrench_msg.header.frame_id = "grasp_point"
+        self.wrench_msg.header.frame_id = "grasp_goal"
         self.wrench_msg.header.stamp = point_cloud_msg.header.stamp
         force = torch.mean(masked_pred_flow, axis=0)
         self.wrench_msg.wrench.force.x = force[0]
         self.wrench_msg.wrench.force.y = force[1]
         self.wrench_msg.wrench.force.z = force[2]
-        
 
         flow_scale = 0.05
         initial_points = convertTensorToPointsArray(masked_input)
@@ -260,48 +260,83 @@ class RosFlowbot3d:
         line_list.points = interleave_list
         self.flow_pub.publish(line_list)
 
-        self.got_click = True
+        self.got_mask = True
+
+    def convertMsgToMatrix(self, trans):
+        r = Rotation.from_quat([trans.transform.rotation.x, trans.transform.rotation.y,
+                                 trans.transform.rotation.z, trans.transform.rotation.w])
+
+        mat = np.identity(4)
+        mat[0:3, 0:3] = r.as_matrix()
+        mat[0:3, 3] = np.array([trans.transform.translation.x, trans.transform.translation.y,
+                               trans.transform.translation.z])
+
+        return mat
 
     def clickPointCallback(self, click_point):
         # Project point into 3D
         latest_depth_image_msg = self.depth_image_queue.pop()
         depth_img_opencv = self.bridge.imgmsg_to_cv2(latest_depth_image_msg, desired_encoding='32FC1')
-        point2d = torch.reshape(torch.Tensor([click_point.point.x, click_point.point.y, 1.0]), (3,1))
+        
+        point2d = torch.reshape(torch.Tensor([click_point.point.x, click_point.point.y, 1.0]), (3, 1))
+        print(f"point2d {point2d}")
         camera_matrix = torch.Tensor(self.camera_intrinsics.intrinsic_matrix)
         point3d = torch.matmul(camera_matrix.inverse(), point2d)
+        print(f"point3d {point3d}")
 
-        self.grasp_point.header.stamp = click_point.header.stamp
-        self.grasp_point.header.frame_id = latest_depth_image_msg.header.frame_id
-        depth = depth_img_opencv[int(click_point.point.y)][int(click_point.point.x)] * 0.001 # conver mm to m
-        self.grasp_point.point.x = point3d[0][0] * depth
-        self.grasp_point.point.y = point3d[1][0] * depth
-        self.grasp_point.point.z = depth
+        print(f"depth_img_opencv {depth_img_opencv[int(click_point.point.y)][int(click_point.point.x)]}")
+        depth = depth_img_opencv[int(click_point.point.y)][int(click_point.point.x)] * 0.001  # conver mm to m
 
-        self.grasp_point_pub.publish(self.grasp_point)
+        point3d_position = np.array([point3d[0][0] * depth, point3d[1][0] * depth, depth])
+        print(f"point3d_position {point3d_position}")
+        point3d_transform = np.identity(4)
+        point3d_transform[0:3, 3] = point3d_position
+        print(f"point3d_transform {point3d_transform}")
 
-        self.tf_msg.header.frame_id = latest_depth_image_msg.header.frame_id
-        
 
-    
+        try:
+            T_BC = self.tfBuffer.lookup_transform(
+                "base_link_base", latest_depth_image_msg.header.frame_id, rospy.Time(),
+                timeout=rospy.Duration(0.1))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            print(f"can't get transform from base_link_base to {latest_depth_image_msg.header.frame_id}")
+
+        trans_in_base = self.convertMsgToMatrix(T_BC) @ point3d_transform
+        print(f"trans_in_base {trans_in_base}")
+
+        self.grasp_goal_msg.header.frame_id = "base_link_base"
+        self.grasp_goal_msg.point.x = trans_in_base[0][3]
+        self.grasp_goal_msg.point.y = trans_in_base[1][3]
+        self.grasp_goal_msg.point.z = trans_in_base[2][3]
+
+        self.tf_msg.header.frame_id = "base_link_base"
+        self.tf_msg.child_frame_id = "grasp_goal"
+        self.tf_msg.transform.translation.x = self.grasp_goal_msg.point.x
+        self.tf_msg.transform.translation.y = self.grasp_goal_msg.point.y
+        self.tf_msg.transform.translation.z = self.grasp_goal_msg.point.z
+        self.tf_msg.transform.rotation.x = 0
+        self.tf_msg.transform.rotation.y = 0
+        self.tf_msg.transform.rotation.z = 0
+        self.tf_msg.transform.rotation.w = 1
+        self.got_click = True
+
     def run(self):
-        
+
         while not rospy.is_shutdown():
-            if self.got_click:
+            if self.got_click and self.got_mask:
+
                 self.tf_msg.header.stamp = rospy.Time.now()
-                self.tf_msg.child_frame_id = "grasp_point"
-                self.tf_msg.transform.translation.x = self.grasp_point.point.x
-                self.tf_msg.transform.translation.y = self.grasp_point.point.y
-                self.tf_msg.transform.translation.z = self.grasp_point.point.z
-                self.tf_msg.transform.rotation.x = 0
-                self.tf_msg.transform.rotation.y = 0
-                self.tf_msg.transform.rotation.z = 0
-                self.tf_msg.transform.rotation.w = 1
                 self.tf_broadcaster.sendTransform(self.tf_msg)
 
-                self.wrench_msg.header.stamp = rospy.Time.now()
+                self.wrench_msg.header.stamp = self.tf_msg.header.stamp
                 self.wrench_pub.publish(self.wrench_msg)
-            self.rate.sleep()
 
+                self.grasp_goal_msg.header.stamp = self.wrench_msg.header.stamp
+                self.grasp_goal_pub.publish(self.grasp_goal_msg)
+
+                self.got_click = False
+                self.got_mask = False
+            self.rate.sleep()
 
     def depthImageCallback(self, depth_img):
 
