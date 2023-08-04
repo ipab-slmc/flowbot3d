@@ -10,6 +10,7 @@ import torch_geometric.data as tgd
 import itertools
 import typing
 from scipy.spatial.transform import Rotation
+import gc
 
 # ROS imports
 import rospy
@@ -37,8 +38,20 @@ FIELDS_XYZ = [
     PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
     PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
 ]
+FIELDS_I = [
+    PointField(name='intensity', offset=12, datatype=PointField.FLOAT32, count=1),
+]
+FIELDS_NORM = [
+    PointField(name='normal_x', offset=16, datatype=PointField.FLOAT32, count=1),
+    PointField(name='normal_y', offset=20, datatype=PointField.FLOAT32, count=1),
+    PointField(name='normal_z', offset=24, datatype=PointField.FLOAT32, count=1),
+    PointField(name='curvature', offset=28, datatype=PointField.FLOAT32, count=1),
+]
+
 FIELDS_XYZRGB = FIELDS_XYZ + \
     [PointField(name='rgb', offset=12, datatype=PointField.UINT32, count=1)]
+
+FIELDS_XYZINORM = FIELDS_XYZ + FIELDS_I + FIELDS_NORM
 
 # Bit operations
 BIT_MOVE_16 = 2**16
@@ -122,6 +135,26 @@ def convertCloudFromOpen3dToRos(open3d_cloud, frame_id="odom"):
     return pc2.create_cloud(header, fields, cloud_data)
 
 
+def convertTensorToRosPointcloud(points_tensor, colors_tensor, frame_id="odom"):
+    # Set "header"
+    header = Header()
+    header.stamp = rospy.Time.now()
+    header.frame_id = frame_id
+
+    # Set "fields" and "cloud_data"
+    fields = FIELDS_XYZINORM
+
+    intensity_tensor = torch.zeros(points_tensor.shape[0],1)
+    curvature_tensor = intensity_tensor
+
+    cloud_data = torch.cat((points_tensor, intensity_tensor, colors_tensor, curvature_tensor), 1)
+
+    cloud_data = cloud_data.tolist()
+    print(cloud_data[0])
+
+    return pc2.create_cloud(header, fields, cloud_data)
+
+
 def convertTensorToPointsArray(tensor):
     points = []
     for i in range(tensor.shape[0]):
@@ -138,8 +171,8 @@ class RosFlowbot3d:
 
     def __init__(self, args):
 
-        # self.model = fmf.ArtFlowNet.load_from_checkpoint(args.model_path).cuda()
-        # self.model.eval()
+        self.model = fmf.ArtFlowNet.load_from_checkpoint(args.model_path).cuda()
+        self.model.eval()
 
         self.depth_image_queue = []
         self.queue_size = 10
@@ -157,7 +190,8 @@ class RosFlowbot3d:
         # Publishers
         self.grasp_goal_pub = rospy.Publisher('~grasp_goal', PointStamped, queue_size=10)
         self.pointcloud_pub = rospy.Publisher('~masked_pointcloud', PointCloud2, queue_size=10)
-        self.flow_pub = rospy.Publisher('~affordance', Marker, queue_size=10)
+        self.flow_pub = rospy.Publisher('~affordance', PointCloud2, queue_size=10)
+        self.flow_pub_viz = rospy.Publisher('~affordance_visualization', Marker, queue_size=10)
         self.wrench_pub = rospy.Publisher('~wrench', WrenchStamped, queue_size=10)
         # Subscribers
         rospy.Subscriber("/rqt_image_segmentation/click_point",
@@ -166,7 +200,7 @@ class RosFlowbot3d:
                          Image, self.depthImageCallback, queue_size=10)
         rospy.Subscriber("/input/mask", Image, self.maskedImageCallback, queue_size=10)
 
-        self.tf_broadcaster = tf2_ros.StaticTransformBroadcaster()
+        self.tf_broadcaster = tf2_ros.TransformBroadcaster()
 
         self.tfBuffer = tf2_ros.Buffer()
         self.listener = tf2_ros.TransformListener(self.tfBuffer)
@@ -177,6 +211,10 @@ class RosFlowbot3d:
         self.tf_msg = TransformStamped()
         self.got_click = False
         self.got_mask = False
+
+    def __del__(self):
+        gc.collect()
+        torch.cuda.empty_cache()
 
     def maskedImageCallback(self, image_mask_msg):
         # convert image mask to open3d
@@ -195,10 +233,6 @@ class RosFlowbot3d:
         pointcloud_open3d = open3d.t.geometry.PointCloud.create_from_rgbd_image(
             rgbd_image, self.camera_k_matrix, stride=10)
         # pointcloud_open3d = pointcloud_open3d.voxel_down_sample(0.01) # downsample for flowbot
-
-        open3d.t.io.write_point_cloud("/home/russell/test.pcd", pointcloud_open3d)
-        cv2.imwrite("/home/russell/image_mask.png",  image_mask_opencv_bgr)
-        cv2.imwrite("/home/russell/depth_image.png",  depth_img_opencv)
 
         point_cloud_msg = convertCloudFromOpen3dToRos(
             pointcloud_open3d, frame_id=latest_depth_image_msg.header.frame_id)
@@ -223,8 +257,17 @@ class RosFlowbot3d:
         ros_data = typing.cast(Flowbot3DTGData, ros_dataset)
         batch = tgd.Batch.from_data_list([ros_data])
         pred_flow = torch.zeros_like(input_tensor)
-        # with torch.no_grad():
-        # pred_flow = self.model(batch.cuda()).cpu()
+        with torch.no_grad():
+            pred_flow = self.model(batch.cuda()).cpu()
+
+        # Get masked points only
+        mask_idx = mask == 1
+        masked_input = input_tensor[mask_idx]
+        masked_pred_flow = pred_flow[mask_idx]
+
+        # convert to pointcloud for estimation
+        output_cloud_msg = convertTensorToRosPointcloud(masked_input, masked_pred_flow, frame_id = point_cloud_msg.header.frame_id)
+        self.flow_pub.publish(output_cloud_msg)
 
         line_list = Marker()
         line_list.header.frame_id = point_cloud_msg.header.frame_id
@@ -240,17 +283,6 @@ class RosFlowbot3d:
         line_list.color.r = 1.0
         line_list.color.a = 1.0
 
-        mask_idx = mask == 1
-
-        masked_input = input_tensor[mask_idx]
-        masked_pred_flow = pred_flow[mask_idx]
-
-        self.wrench_msg.header.frame_id = "grasp_goal"
-        self.wrench_msg.header.stamp = point_cloud_msg.header.stamp
-        force = torch.mean(masked_pred_flow, axis=0)
-        self.wrench_msg.wrench.force.x = force[0]
-        self.wrench_msg.wrench.force.y = force[1]
-        self.wrench_msg.wrench.force.z = force[2]
 
         flow_scale = 0.05
         initial_points = convertTensorToPointsArray(masked_input)
@@ -258,13 +290,13 @@ class RosFlowbot3d:
         interleave_list = list(itertools.chain(*zip(initial_points, end_points)))
 
         line_list.points = interleave_list
-        self.flow_pub.publish(line_list)
+        self.flow_pub_viz.publish(line_list)
 
         self.got_mask = True
 
     def convertMsgToMatrix(self, trans):
         r = Rotation.from_quat([trans.transform.rotation.x, trans.transform.rotation.y,
-                                 trans.transform.rotation.z, trans.transform.rotation.w])
+                                trans.transform.rotation.z, trans.transform.rotation.w])
 
         mat = np.identity(4)
         mat[0:3, 0:3] = r.as_matrix()
@@ -277,22 +309,21 @@ class RosFlowbot3d:
         # Project point into 3D
         latest_depth_image_msg = self.depth_image_queue.pop()
         depth_img_opencv = self.bridge.imgmsg_to_cv2(latest_depth_image_msg, desired_encoding='32FC1')
-        
+
         point2d = torch.reshape(torch.Tensor([click_point.point.x, click_point.point.y, 1.0]), (3, 1))
-        print(f"point2d {point2d}")
+        # print(f"point2d {point2d}")
         camera_matrix = torch.Tensor(self.camera_intrinsics.intrinsic_matrix)
         point3d = torch.matmul(camera_matrix.inverse(), point2d)
-        print(f"point3d {point3d}")
+        # print(f"point3d {point3d}")
 
-        print(f"depth_img_opencv {depth_img_opencv[int(click_point.point.y)][int(click_point.point.x)]}")
+        # print(f"depth_img_opencv {depth_img_opencv[int(click_point.point.y)][int(click_point.point.x)]}")
         depth = depth_img_opencv[int(click_point.point.y)][int(click_point.point.x)] * 0.001  # conver mm to m
 
         point3d_position = np.array([point3d[0][0] * depth, point3d[1][0] * depth, depth])
-        print(f"point3d_position {point3d_position}")
+        # print(f"point3d_position {point3d_position}")
         point3d_transform = np.identity(4)
         point3d_transform[0:3, 3] = point3d_position
-        print(f"point3d_transform {point3d_transform}")
-
+        # print(f"point3d_transform {point3d_transform}")
 
         try:
             T_BC = self.tfBuffer.lookup_transform(
@@ -302,7 +333,7 @@ class RosFlowbot3d:
             print(f"can't get transform from base_link_base to {latest_depth_image_msg.header.frame_id}")
 
         trans_in_base = self.convertMsgToMatrix(T_BC) @ point3d_transform
-        print(f"trans_in_base {trans_in_base}")
+        # print(f"trans_in_base {trans_in_base}")
 
         self.grasp_goal_msg.header.frame_id = "base_link_base"
         self.grasp_goal_msg.point.x = trans_in_base[0][3]
@@ -327,9 +358,6 @@ class RosFlowbot3d:
 
                 self.tf_msg.header.stamp = rospy.Time.now()
                 self.tf_broadcaster.sendTransform(self.tf_msg)
-
-                self.wrench_msg.header.stamp = self.tf_msg.header.stamp
-                self.wrench_pub.publish(self.wrench_msg)
 
                 self.grasp_goal_msg.header.stamp = self.wrench_msg.header.stamp
                 self.grasp_goal_pub.publish(self.grasp_goal_msg)
