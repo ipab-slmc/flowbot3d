@@ -151,7 +151,6 @@ def convertTensorToRosPointcloud(points_tensor, colors_tensor, frame_id="odom"):
     cloud_data = torch.cat((points_tensor, intensity_tensor, colors_tensor, curvature_tensor), 1)
 
     cloud_data = cloud_data.tolist()
-    print(cloud_data[0])
 
     return pc2.create_cloud(header, fields, cloud_data)
 
@@ -172,8 +171,12 @@ class RosFlowbot3d:
 
     def __init__(self, args):
 
-        self.model = fmf.ArtFlowNet.load_from_checkpoint(args.model_path).cuda()
-        self.model.eval()
+        self.load_model = rospy.get_param("~load_model")
+
+        if(self.load_model):
+            print("LOADING MODEL")
+        else:
+            print("NOT LOADING MODEL")
 
         self.depth_image_queue = []
         self.queue_size = 10
@@ -188,16 +191,7 @@ class RosFlowbot3d:
             # width=640, height=480, fx=462.1379699707031, fy=462.1379699707031, cx=320.0, cy=240.0)
 
         self.camera_k_matrix = open3d.core.Tensor(self.camera_intrinsics.intrinsic_matrix)
-        # Publishers
-        self.pointcloud_pub = rospy.Publisher('~masked_pointcloud', PointCloud2, queue_size=10)
-        self.flow_pub = rospy.Publisher('~affordance', PointCloud2, queue_size=10)
-        self.flow_pub_viz = rospy.Publisher('~affordance_visualization', Marker, queue_size=10)
-        # Subscribers
-        rospy.Subscriber("/rqt_image_segmentation/click_point",
-                         PointStamped, self.clickPointCallback, queue_size=10)
-        rospy.Subscriber("/input/depth_image",
-                         Image, self.depthImageCallback, queue_size=10)
-        rospy.Subscriber("/input/mask", Image, self.maskedImageCallback, queue_size=10)
+
 
         self.tf_broadcaster = tf2_ros.TransformBroadcaster()
 
@@ -211,6 +205,23 @@ class RosFlowbot3d:
         self.got_click = False
         self.got_mask = False
         self.got_mask_once = False
+
+        # Publishers
+        self.pointcloud_pub = rospy.Publisher('~masked_pointcloud', PointCloud2, queue_size=10)
+        self.flow_pub = rospy.Publisher('~affordance', PointCloud2, queue_size=10)
+        self.flow_pub_viz = rospy.Publisher('~affordance_visualization', Marker, queue_size=10)
+        # Subscribers  
+        if (self.load_model):
+            self.model = fmf.ArtFlowNet.load_from_checkpoint(args.model_path).cuda()
+            self.model.eval()
+            rospy.Subscriber("/input/mask", Image, self.maskedImageCallback, queue_size=10)
+
+        rospy.Subscriber("/rqt_image_segmentation/click_point",
+                         Point, self.clickPointCallback, queue_size=10)
+        rospy.Subscriber("/input/depth_image",
+                         Image, self.depthImageCallback, queue_size=10)
+
+
 
     def __del__(self):
         gc.collect()
@@ -310,11 +321,11 @@ class RosFlowbot3d:
         latest_depth_image_msg = self.depth_image_queue.pop()
         depth_img_opencv = self.bridge.imgmsg_to_cv2(latest_depth_image_msg, desired_encoding='32FC1')
 
-        point2d = torch.reshape(torch.Tensor([click_point.point.x, click_point.point.y, 1.0]), (3, 1))
+        point2d = torch.reshape(torch.Tensor([click_point.x, click_point.y, 1.0]), (3, 1))
         camera_matrix = torch.Tensor(self.camera_intrinsics.intrinsic_matrix)
         point3d = torch.matmul(camera_matrix.inverse(), point2d)
 
-        depth = depth_img_opencv[int(click_point.point.y)][int(click_point.point.x)] * 0.001  # conver mm to m
+        depth = depth_img_opencv[int(click_point.y)][int(click_point.x)] * 0.001  # conver mm to m
 
         point3d_position = np.array([point3d[0][0] * depth, point3d[1][0] * depth, depth])
         point3d_transform = np.identity(4)
@@ -352,10 +363,10 @@ class RosFlowbot3d:
                 self.tf_msg.header.stamp = rospy.Time.now()
                 self.tf_broadcaster.sendTransform(self.tf_msg)
 
-                if self.got_click and self.got_mask:
-                    self.go_to_grasp_srv_.call()
-                    self.got_click = False
-                    self.got_mask = False
+                # if self.got_click and self.got_mask:
+                #     self.go_to_grasp_srv_.call()
+                #     self.got_click = False
+                #     self.got_mask = False
 
 
             self.rate.sleep()
