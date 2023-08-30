@@ -221,7 +221,7 @@ class RosFlowbot3d:
         rospy.Subscriber("/input/depth_image",
                          Image, self.depthImageCallback, queue_size=10)
 
-
+        self.click_goal_offest = [-0.02, 0.0, 0.0] # in world frame
 
     def __del__(self):
         gc.collect()
@@ -342,9 +342,9 @@ class RosFlowbot3d:
 
         self.tf_msg.header.frame_id = "base_link_base"
         self.tf_msg.child_frame_id = "grasp_goal"
-        self.tf_msg.transform.translation.x = trans_in_base[0][3]
-        self.tf_msg.transform.translation.y = trans_in_base[1][3]
-        self.tf_msg.transform.translation.z = trans_in_base[2][3]
+        self.tf_msg.transform.translation.x = trans_in_base[0][3] + self.click_goal_offest[0]
+        self.tf_msg.transform.translation.y = trans_in_base[1][3] + self.click_goal_offest[1]
+        self.tf_msg.transform.translation.z = trans_in_base[2][3] + self.click_goal_offest[2]
         self.tf_msg.transform.rotation.x = 0
         self.tf_msg.transform.rotation.y = 0
         self.tf_msg.transform.rotation.z = 0
@@ -362,12 +362,6 @@ class RosFlowbot3d:
 
                 self.tf_msg.header.stamp = rospy.Time.now()
                 self.tf_broadcaster.sendTransform(self.tf_msg)
-
-                # if self.got_click and self.got_mask:
-                #     self.go_to_grasp_srv_.call()
-                #     self.got_click = False
-                #     self.got_mask = False
-
 
             self.rate.sleep()
 
