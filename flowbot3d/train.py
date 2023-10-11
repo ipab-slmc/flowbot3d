@@ -99,16 +99,17 @@ def create_flowbot_datasets(
             dset_cls=Flowbot3DPyGDataset,
             dset_kwargs=dict(
                 root=root / "raw",
-                split=["7179"],
+                #104046
+                split=["104046"],
                 randomize_camera=randomize_camera,
             ),
-            data_keys=["7179"],
+            data_keys=["104046"],
             root=root,
             processed_dirname=Flowbot3DPyGDataset.get_processed_dir(
                 True,
                 randomize_camera,
             ),
-            n_repeat=1,
+            n_repeat=100,
             n_workers=n_workers,
         )
         train_dset = dset
@@ -232,7 +233,7 @@ def train(
     mask_input_channel: bool = True,
     randomize_camera: bool = True,
     epochs: int = 100,
-    n_workers: int = 6,
+    n_workers: int = 4,
     log_every_n_steps: int = 5,
     check_val_every_n_epoch: int = 1,
     wandb: bool = False,

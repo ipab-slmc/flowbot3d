@@ -46,38 +46,40 @@ def make_tables(results_dir, method_names, metric, method_display_names=None, hi
 print("loading dataset")
 dataset = Flowbot3DPyGDataset(
     root=os.path.expanduser("/home/russell/Datasets/partnet-mobility-v0/dataset/raw/"),
-    split="umpnet-test",
-    randomize_camera=True,
+    split=["104046"],
+    randomize_camera=False,
 )
 
 print("Load a ply point cloud, print it, and render it")
 
 # Load the model.
 print("loading checkpoint")
-ckpt_path = "/home/russell/git/flowbot3d/checkpoints/no-wandb/camera_frame/mask/epoch=99-step=78600.ckpt"
+ckpt_path = "/home/russell/git/flowbot3d/checkpoints/no-wandb/2023_10_11-11_21_49/epoch=99-step=200.ckpt"
 model = fmf.ArtFlowNet.load_from_checkpoint(ckpt_path).cuda()
 model.eval()
 
 ################ Read file
-pcd = o3d.t.io.read_point_cloud("/home/russell/test.pcd")
-input_tensor = torch.utils.dlpack.from_dlpack(pcd.point.positions.to_dlpack())
-mask = torch.zeros(pcd.point.positions.shape[0])
-i = 0
-for point in pcd.point.colors:
-    if not( point[0] == 0 and point[1] == 0 and point[2] == 0):
-        mask[i] = 1
-    i += 1
+# pcd = o3d.t.io.read_point_cloud("/home/russell/test.pcd")
+# input_tensor = torch.utils.dlpack.from_dlpack(pcd.point.positions.to_dlpack())
+# mask = torch.zeros(pcd.point.positions.shape[0])
+# i = 0
+# for point in pcd.point.colors:
+#     if not( point[0] == 0 and point[1] == 0 and point[2] == 0):
+#         mask[i] = 1
+#     i += 1
 
-ros_dataset = tgd.Data(
-    id="box",
-    pos=input_tensor,
-    flow=torch.zeros_like(input_tensor,dtype=torch.float32),
-    mask=mask
-)
-ros_dataset= cast(Flowbot3DTGData, ros_dataset)
+# ros_dataset = tgd.Data(
+#     id="box",
+#     pos=input_tensor,
+#     flow=torch.zeros_like(input_tensor,dtype=torch.float32),
+#     mask=mask
+# )
+# ros_dataset= cast(Flowbot3DTGData, ros_dataset)
 
+print("here I guess")
 time1 = time.perf_counter()
-batch = tgd.Batch.from_data_list([ros_dataset])
+data = dataset.get_data("104046")
+batch = tgd.Batch.from_data_list([data])
 print("forward pass")
 with torch.no_grad():
     pred_flow = model(batch.cuda()).cpu()
@@ -87,10 +89,10 @@ print(f"Took {time.perf_counter() - time1} seconds")
 input = batch.cpu()
 input.flow = pred_flow
 
-mask_idx = mask == 1
+# mask_idx = mask == 1
 
 print(f"pred_flow {pred_flow}")
-print(f"masked_pred_flow {pred_flow[mask_idx]}")
+# print(f"masked_pred_flow {pred_flow[mask_idx]}")
 
 fig = fmf.ArtFlowNet.make_plots(pred_flow, input)["artflownet_plot"]
 

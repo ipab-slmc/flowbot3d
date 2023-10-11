@@ -8,7 +8,7 @@ from flowbot3d.tg_dataset import Flowbot3DTGDataset
 
 
 def main(
-    root: str = os.path.expanduser("~/datasets/partnet-mobility"),
+    root: str = os.path.expanduser("~/Datasets/partnet-mobility-v0/dataset"),
     split: str = "umpnet-train-train",
     randomize_joints: bool = True,
     randomize_camera: bool = True,
