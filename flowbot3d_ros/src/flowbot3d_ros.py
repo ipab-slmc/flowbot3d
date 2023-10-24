@@ -182,11 +182,15 @@ class RosFlowbot3d:
         self.queue_size = 10
         self.bridge = CvBridge()
 
-        # real camera
+        # real azure kinect
         self.camera_intrinsics = open3d.camera.PinholeCameraIntrinsic(
-            width=640, height=480, fx=613.7716064453125, fy=614.099609375, cx=314.3857421875, cy=242.46636962890625)
+            width=640, height=480, fx=610.542724609375, fy=610.4918823242188, cx=640.877685546875, cy=363.1533508300781)
 
-        # simulation
+        # real realsense camera
+        # self.camera_intrinsics = open3d.camera.PinholeCameraIntrinsic(
+        #     width=640, height=480, fx=613.7716064453125, fy=614.099609375, cx=314.3857421875, cy=242.46636962890625)
+
+        # simulated realsense
         # self.camera_intrinsics = open3d.camera.PinholeCameraIntrinsic(
             # width=640, height=480, fx=462.1379699707031, fy=462.1379699707031, cx=320.0, cy=240.0)
 
@@ -222,6 +226,8 @@ class RosFlowbot3d:
                          Image, self.depthImageCallback, queue_size=10)
 
         self.click_goal_offest = [-0.02, 0.0, 0.0] # in world frame
+
+        print("FINISHED LOADING MODEL")
 
     def __del__(self):
         gc.collect()
@@ -274,6 +280,10 @@ class RosFlowbot3d:
         mask_idx = mask == 1
         masked_input = input_tensor[mask_idx]
         masked_pred_flow = pred_flow[mask_idx]
+
+        print(masked_pred_flow.shape)
+        masked_pred_flow[:,0] *= -1
+        # exit()
 
         # convert to pointcloud for estimation
         output_cloud_msg = convertTensorToRosPointcloud(masked_input, masked_pred_flow, frame_id = point_cloud_msg.header.frame_id)
@@ -333,14 +343,14 @@ class RosFlowbot3d:
 
         try:
             T_BC = self.tfBuffer.lookup_transform(
-                "base_link_base", latest_depth_image_msg.header.frame_id, rospy.Time(),
+                "base_link", latest_depth_image_msg.header.frame_id, rospy.Time(),
                 timeout=rospy.Duration(0.1))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            print(f"can't get transform from base_link_base to {latest_depth_image_msg.header.frame_id}")
+            print(f"can't get transform from base_link to {latest_depth_image_msg.header.frame_id}")
 
         trans_in_base = self.convertMsgToMatrix(T_BC) @ point3d_transform
 
-        self.tf_msg.header.frame_id = "base_link_base"
+        self.tf_msg.header.frame_id = "base_link"
         self.tf_msg.child_frame_id = "grasp_goal"
         self.tf_msg.transform.translation.x = trans_in_base[0][3] + self.click_goal_offest[0]
         self.tf_msg.transform.translation.y = trans_in_base[1][3] + self.click_goal_offest[1]

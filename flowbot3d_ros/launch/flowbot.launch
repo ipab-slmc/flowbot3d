@@ -1,10 +1,10 @@
 <?xml version="1.0"?>
 <launch>
-    <arg name="model_path" default="/home/iiwa-kuka/software/russell_ws/src/flowbot3d/models/camera_frame_mask/epoch=99-step=78600.ckpt"/>
+    <arg name="model_path" default="/home/russell/git/flowbot3d/checkpoints/no-wandb/2023_10_11-11_21_49/epoch=99-step=200.ckpt"/>
     <arg name="load_model" default="true"/>
 
     <node pkg="flowbot3d_ros" name="flowbot3d_ros" type="flowbot3d_ros.py" args="--model_path $(arg model_path)" output="screen">
-    <remap from="/input/depth_image" to="/live_camera/aligned_depth_to_color/image_raw"/>
+    <remap from="/input/depth_image" to="/depth_to_rgb/image_raw"/>
     <remap from="/input/mask" to="/rqt_image_segmentation/mask"/>
     <param name="load_model"                      value="$(arg load_model)"/>
     </node>
